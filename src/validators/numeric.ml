@@ -11,6 +11,7 @@ type options = {
   relative: bool;
   allow_range: bool;
   require_range: bool;
+  parsed_radix: string list;
 }
 
 let default_opts = {
@@ -23,6 +24,7 @@ let default_opts = {
   relative = false;
   allow_range = false;
   require_range = false;
+  parsed_radix = [""];
 }
 
 let opts = ref default_opts
@@ -39,6 +41,9 @@ let args = [
     ("--relative", Arg.Unit (fun () -> opts := {!opts with relative=true}), "Allow relative increment/decrement (+/-N)");
     ("--allow-range", Arg.Unit (fun () -> opts := {!opts with allow_range=true}), "Allow the argument to be a range rather than a single number");
     ("--require-range", Arg.Unit (fun () -> opts := {!opts with require_range=true; allow_range=true}), "Require the argument to be a range rather than a single number");
+    ("--require-radix", Arg.String (fun s -> opts := {!opts with parsed_radix=[s]}), "Require numbers to use non-decimal radix & prefix (x, b, o for 0x, 0b, 0o)");
+    ("--allow-radix", Arg.String (fun s -> let optsv = !opts in opts := {optsv with parsed_radix=(s :: optsv.parsed_radix)}), "Allow numbers to optionally use non-decimal radix & prefix (x, b or o, inclusive)");
+    ("--allow-any-radix", Arg.Unit (fun () -> opts := {!opts with parsed_radix=[""; "x"; "o"; "b"]}), "Allow numbers to optionally use any non-decimal radix & prefix");
     ("--", Arg.Rest (fun s -> number_arg := s), "Interpret next item as an argument");
 ]
 let usage = Printf.sprintf "Usage: %s [OPTIONS] <number>|<range>" Sys.argv.(0)
@@ -65,7 +70,7 @@ let check_positive opts m =
         failwith "option '--positive does' not apply to a range value"
 
 let looks_like_number value =
-  try let _ = Pcre2.exec ~pat:"^(\\-?)[0-9]+(\\.[0-9]+)?$" value in true
+  try let _ = Pcre2.exec ~pat:"^(\\-?)(0[xobXOB])?[0-9]+(\\.[0-9]+)?$" value in true
   with Not_found -> false
 
 let is_relative value =
@@ -170,7 +175,7 @@ let check_argument_type opts m =
     else Printf.ksprintf failwith "Value must be a number, not a range"
 
 let is_range_val s =
-  try let _ = Pcre2.exec ~pat:"^[0-9]+-[0-9]+$" s in true
+  try let _ = Pcre2.exec ~pat:"^(0[xobXOB])?[0-9]+-(0[xobXOB])?[0-9]+$" s in true
   with Not_found -> false
 
 let var_numeric_str s =
