@@ -11,7 +11,10 @@ type options = {
   relative: bool;
   allow_range: bool;
   require_range: bool;
-  parsed_radix: string list;
+  parse_hex: bool;
+  parse_oct: bool;
+  parse_bin: bool;
+  parse_dec: bool;
 }
 
 let default_opts = {
@@ -24,7 +27,10 @@ let default_opts = {
   relative = false;
   allow_range = false;
   require_range = false;
-  parsed_radix = [""];
+  parse_hex = false;
+  parse_oct = false;
+  parse_bin = false;
+  parse_dec = false;
 }
 
 let opts = ref default_opts
@@ -41,9 +47,10 @@ let args = [
     ("--relative", Arg.Unit (fun () -> opts := {!opts with relative=true}), "Allow relative increment/decrement (+/-N)");
     ("--allow-range", Arg.Unit (fun () -> opts := {!opts with allow_range=true}), "Allow the argument to be a range rather than a single number");
     ("--require-range", Arg.Unit (fun () -> opts := {!opts with require_range=true; allow_range=true}), "Require the argument to be a range rather than a single number");
-    ("--require-radix", Arg.String (fun s -> opts := {!opts with parsed_radix=[s]}), "Require numbers to use non-decimal radix & prefix (x, b, o for 0x, 0b, 0o)");
-    ("--allow-radix", Arg.String (fun s -> let optsv = !opts in opts := {optsv with parsed_radix=(s :: optsv.parsed_radix)}), "Allow numbers to optionally use non-decimal radix & prefix (x, b or o, inclusive)");
-    ("--allow-any-radix", Arg.Unit (fun () -> opts := {!opts with parsed_radix=[""; "x"; "o"; "b"]}), "Allow numbers to optionally use any non-decimal radix & prefix");
+    ("--hex", Arg.Unit (fun () -> opts := {!opts with parse_hex=true}), "Parse hexadecimal integers as valid numbers, complete with 0x-prefix");
+    ("--octal", Arg.Unit (fun () -> opts := {!opts with parse_oct=true}), "Parse octal integers as valid numbers, complete with 0o-prefix");
+    ("--binary", Arg.Unit (fun () -> opts := {!opts with parse_bin=true}), "Parse binary integers as valid numbers, complete with 0b-prefix");
+    ("--decimal", Arg.Unit (fun () -> opts := {!opts with parse_dec=true}), "Continue to parse decimal numbers even when other radixes are requested, no prefix required");
     ("--", Arg.Rest (fun s -> number_arg := s), "Interpret next item as an argument");
 ]
 let usage = Printf.sprintf "Usage: %s [OPTIONS] <number>|<range>" Sys.argv.(0)
@@ -69,12 +76,24 @@ let check_positive opts m =
     | Range_float _ ->
         failwith "option '--positive does' not apply to a range value"
 
-let looks_like_number value =
-  try let _ = Pcre2.exec ~pat:"^(\\-?)(0[xobXOB])?[0-9]+(\\.[0-9]+)?$" value in true
+let looks_like_decimal value =
+  try let _ = Pcre2.exec ~pat:"^(\\-?)[0-9]+(\\.[0-9]+)?$" value in true
+  with Not_found -> false
+
+let looks_like_hex value =
+  try let _ = Pcre2.exec ~pat:"^(\\-?)0[xX][0-9a-fA-F]+$" value in true
+  with Not_found -> false
+
+let looks_like_octal value =
+  try let _ = Pcre2.exec ~pat:"^(\\-?)0[oO][0-7]+$" value in true
+  with Not_found -> false
+
+let looks_like_binary value =
+  try let _ = Pcre2.exec ~pat:"^(\\-?)0[bB][0-1]+$" value in true
   with Not_found -> false
 
 let is_relative value =
-  try let _ = Pcre2.exec ~pat:"^[+-][0-9]+$" value in true
+  try let _ = Pcre2.exec ~pat:"^[+-](0[xboXBO])?[0-9a-fA-F]+$" value in true
   with Not_found -> false
 
 let number_string_drop_modifier value =
@@ -92,21 +111,34 @@ let get_relative opts t =
   else t
 
 let number_of_string opts s =
-  if not (looks_like_number s) then Printf.ksprintf failwith "'%s' is not a valid number" s else
-  let n = float_of_string_opt s in
-  match n with
-  | Some n ->
-    (* If floats are explicitly allowed, just return the number. *)
-    if opts.allow_float then n
-    (* If floats are not explicitly allowed, check if the argument has a decimal separator in it.
-       If the argument string contains a dot but float_of_string didn't dislike it,
-       it's a valid number but not an integer.
-     *)
-    else if not (String.contains s '.') then n
-    (* If float_of_string returned None, the argument string is just garbage rather than a number. *)
-    else Printf.ksprintf failwith "'%s' is not a valid integer number" s
-  | None ->
-     Printf.ksprintf failwith "'%s' is not a valid number" s
+  if (opts.parse_hex && (looks_like_hex s)) || 
+       (opts.parse_oct && (looks_like_octal s)) ||
+       (opts.parse_bin && (looks_like_binary s)) then
+      (* float_of_string won't deal with octal or binary and hex-floats are just weird. 
+         Easier to separate non-decimal parsing this way. 
+       *)
+      let n = int_of_string_opt s in
+      match n with
+      | Some n ->
+        float_of_int n
+      | None ->
+        Printf.ksprintf failwith "'%s' is not a valid non-decimal number" s
+  else if (opts.parse_dec && (looks_like_decimal s)) then 
+    let n = float_of_string_opt s in
+    match n with
+    | Some n ->
+      (* If floats are explicitly allowed, just return the number. *)
+      if opts.allow_float then n
+      (* If floats are not explicitly allowed, check if the argument has a decimal separator in it.
+         If the argument string contains a dot but float_of_string didn't dislike it,
+         it's a valid number but not an integer.
+       *)
+      else if not (String.contains s '.') then n
+      (* If float_of_string returned None, the argument string is just garbage rather than a number. *)
+      else Printf.ksprintf failwith "'%s' is not a valid integer number" s
+    | None ->
+      Printf.ksprintf failwith "'%s' is not a valid number" s
+  else Printf.ksprintf failwith "'%s' is not a valid number" s
 
 let range_of_string opts s =
   let rs = String.split_on_char '-' s |> List.map String.trim |> List.map (number_of_string opts) in
@@ -175,7 +207,7 @@ let check_argument_type opts m =
     else Printf.ksprintf failwith "Value must be a number, not a range"
 
 let is_range_val s =
-  try let _ = Pcre2.exec ~pat:"^(0[xobXOB])?[0-9]+-(0[xobXOB])?[0-9]+$" s in true
+  try let _ = Pcre2.exec ~pat:"^(0[xboXBO])?[0-9a-fA-F]+-(0[xboXBO])?[0-9a-fA-F]+$" s in true
   with Not_found -> false
 
 let var_numeric_str s =
@@ -183,9 +215,14 @@ let var_numeric_str s =
   | true -> Range_string s
   | false ->  Number_string s
 
+let check_default_radix opts =
+  if (not opts.parse_hex && not opts.parse_oct && not opts.parse_bin) then
+  {opts with parse_dec=true}
+  else opts
+
 let () = try
   let s = var_numeric_str !number_arg in
-  let opts = !opts in
+  let opts = check_default_radix !opts in
   let s = get_relative opts s in
   let n =
     match s with
